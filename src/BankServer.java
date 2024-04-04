@@ -130,18 +130,35 @@ public class BankServer {
 
         private void logAction(String username, String action, String amount) {
             try {
-                BufferedWriter writer = new BufferedWriter(new FileWriter("audit_log.txt", true));
+                BufferedWriter writerencrypted = new BufferedWriter(new FileWriter("audit_log_encrypted.txt", true));
+                BufferedWriter writer = new BufferedWriter(new FileWriter("audit_log_normal.txt", true));
                 if (username.equals("QUIT") && action.equals("QUIT") && amount.equals("QUIT")) {
-                    writer.write("-----------------------------------------------------");
+                    String encryptedLog = encrypt("-----------------------------------------------------", sharedKey);
+                    String normalLog = "-----------------------------------------------------";
+
+                    writerencrypted.write(encryptedLog);
+                    writerencrypted.newLine();
+                    writerencrypted.close();
+
+                    writer.write(normalLog);
                     writer.newLine();
                     writer.close();
                 } else {
-                    writer.write(username + ", " + action + ": $" + amount + ", " + getCurrentDateTime());
+                    String encryptedLog = encrypt(
+                            username + ", " + action + ": $" + amount + "," + getCurrentDateTime(), sharedKey);
+                    String normalLog = username + ", " + action + ": $" + amount + ", " + getCurrentDateTime();
+                    writerencrypted.write(encryptedLog);
+                    writerencrypted.newLine();
+                    writerencrypted.close();
+
+                    writer.write(normalLog);
                     writer.newLine();
                     writer.close();
                 }
 
             } catch (IOException e) {
+                e.printStackTrace();
+            } catch (Exception e) {
                 e.printStackTrace();
             }
         }
@@ -150,6 +167,13 @@ public class BankServer {
             SimpleDateFormat formatter = new SimpleDateFormat("yyyy-MM-dd HH:mm:ss");
             Date date = new Date();
             return formatter.format(date);
+        }
+
+        private String encrypt(String data, SecretKey key) throws Exception {
+            Cipher cipher = Cipher.getInstance(ALGORITHM);
+            cipher.init(Cipher.ENCRYPT_MODE, key);
+            byte[] encryptedBytes = cipher.doFinal(data.getBytes());
+            return Base64.getEncoder().encodeToString(encryptedBytes);
         }
     }
 }

@@ -214,5 +214,4 @@ public class ATMClient {
 
         return new SecretKey[] { encryptionKey, macKey };
     }
-
 }
