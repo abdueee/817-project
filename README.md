@@ -1,6 +1,6 @@
 # Secure Banking System
 
-This Secure Banking System is a Java-based application designed to simulate the operations of a banking system, featuring secure communication between bank servers and ATM clients. It supports user registration, login, and basic banking transactions, ensuring data integrity and confidentiality through encrypted communications.
+This Secure Banking System is a C-based application designed to simulate the operations of a banking system, featuring secure communication between bank servers and ATM clients. It supports user registration, login, and basic banking transactions, ensuring data integrity and confidentiality through encrypted communications.
 
 ## Features
 
@@ -13,7 +13,7 @@ This Secure Banking System is a Java-based application designed to simulate the 
 
 ### Prerequisites
 
-- Java JDK 11 or later.
+- IDE compatible with C
 - Network access between the server and clients (if running on separate machines).
 
 ### Installation
@@ -27,10 +27,10 @@ cd secure-banking-system
 ### Running the Application
 
 1. Start the bank server:
-java -cp out/production/secure-banking-system BankServer
+-cp out/production/secure-banking-system BankServer
 
 2. In separate terminal windows, start each ATM client:
-java -cp out/production/secure-banking-system ATMClient
+-cp out/production/secure-banking-system ATMClient
 
 
 ## Usage
