@@ -1,183 +1,172 @@
-import javax.crypto.Cipher;
-import javax.crypto.SecretKey;
-import javax.crypto.spec.IvParameterSpec;
-import javax.crypto.spec.SecretKeySpec;
-import java.nio.charset.StandardCharsets;
-import java.security.MessageDigest;
-import java.security.SecureRandom;
-import java.util.Arrays;
-import java.util.Base64;
-import java.util.HashMap;
-import java.util.Map;
-import java.io.*;
-import java.net.*;
-import java.util.concurrent.ConcurrentHashMap;
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <unistd.h>
+#include <pthread.h>
+#include <arpa/inet.h>
+#include <openssl/aes.h>
+#include <openssl/rand.h>
+#include <openssl/evp.h>
 
-public class BankServer {
-    private static final int PORT = 12345;
-    private static Map<String, String> userDatabase = new HashMap<>();
-    private static Map<String, SecretKey> masterSecrets = new ConcurrentHashMap<>();
-    private static final String ALGORITHM = "AES/ECB/PKCS5Padding";
-    private static final String keyString = "mySimpleSharedKey"; // Ensure this is sufficiently secure and random for production use
-    private static final byte[] keyBytes = keyString.getBytes(StandardCharsets.UTF_8);
-    private static final SecretKey sharedKey = new SecretKeySpec(Arrays.copyOf(keyBytes, 16), "AES"); // Using AES-128. Adjust the length as necessary.
+#define PORT 12345
+#define KEY_SIZE 16
 
-    public static void main(String[] args) {
-        try (ServerSocket serverSocket = new ServerSocket(PORT)) {
-            System.out.println("Bank Server is listening on port " + PORT);
+typedef struct {
+    int sock;
+    struct sockaddr_in address;
+    int addr_len;
+} connection_t;
 
-            while (true) {
-                Socket clientSocket = serverSocket.accept();
-                new ClientHandler(clientSocket).start();
-            }
-        } catch (IOException ex) {
-            System.out.println("Server exception: " + ex.getMessage());
-            ex.printStackTrace();
-        }
+typedef struct {
+    char username[256];
+    char password[256];
+} user_t;
+
+user_t userDatabase[100];
+int userCount = 0;
+
+void handleErrors() {
+    ERR_print_errors_fp(stderr);
+    abort();
+}
+
+void encrypt(unsigned char *plaintext, unsigned char *key, unsigned char *ciphertext) {
+    AES_KEY enc_key;
+    AES_set_encrypt_key(key, 128, &enc_key);
+    AES_encrypt(plaintext, ciphertext, &enc_key);
+}
+
+void decrypt(unsigned char *ciphertext, unsigned char *key, unsigned char *plaintext) {
+    AES_KEY dec_key;
+    AES_set_decrypt_key(key, 128, &dec_key);
+    AES_decrypt(ciphertext, plaintext, &dec_key);
+}
+
+void generate_nonce(char *nonce, size_t length) {
+    if (!RAND_bytes((unsigned char *)nonce, length)) {
+        handleErrors();
     }
+}
 
-    private static class ClientHandler extends Thread {
-        private Socket socket;
+void *client_handler(void *ptr) {
+    connection_t *conn;
+    char buffer[1024];
+    unsigned char key[KEY_SIZE] = "mySimpleSharedKey";
 
-        public ClientHandler(Socket socket) {
-            this.socket = socket;
-        }
+    if (!ptr) pthread_exit(0); 
+    conn = (connection_t *)ptr;
 
-        @Override
-        public void run() {
-            try (BufferedReader in = new BufferedReader(new InputStreamReader(socket.getInputStream()));
-                 PrintWriter out = new PrintWriter(socket.getOutputStream(), true)) {
+    while (1) {
+        int len = recv(conn->sock, buffer, sizeof(buffer), 0);
+        if (len <= 0) break;
 
-                String request;
-                // Keep listening for client requests on the same connection
-                while ((request = in.readLine()) != null) {
-                    switch (request) {
-                        case "REGISTER":
-                            String username = in.readLine();
-                            String password = in.readLine(); // Hash in a real system
-                            String registrationResult = registerUser(username, password);
-                            out.println(registrationResult);
-                            break;
-                        case "LOGIN":
-                            username = in.readLine();
-                            password = in.readLine();
-                            boolean loggedIn = loginUser(username, password);
-                            out.println(loggedIn ? "LOGGED IN" : "LOGIN FAILED");
-                            if (loggedIn) {
-                                // Now that the user is logged in, initiate the key distribution protocol
-                                performKeyDistributionProtocol(in, out, username);
-                            }
-                            break;
-                        case "QUIT":
-                            // Client wants to close the connection
-                            return; // Exit the thread
-                        default:
-                            // Handle unknown requests or keep alive messages
-                            break;
-                    }
+        buffer[len] = '\0';
+
+        if (strcmp(buffer, "REGISTER") == 0) {
+            char username[256], password[256];
+            recv(conn->sock, username, sizeof(username), 0);
+            recv(conn->sock, password, sizeof(password), 0);
+
+            int user_exists = 0;
+            for (int i = 0; i < userCount; i++) {
+                if (strcmp(userDatabase[i].username, username) == 0) {
+                    user_exists = 1;
+                    break;
                 }
-
-            } catch (IOException ex) {
-                System.out.println("Server exception: " + ex.getMessage());
-                ex.printStackTrace();
             }
-        }
 
-        private void performKeyDistributionProtocol(BufferedReader in, PrintWriter out, String username) throws IOException {
-            try {
-                // Step 1: Generate server nonce (nonce_S)
-                String nonce_S = generateNonce();
-
-                // Step 2: Send server nonce to client encrypted with the shared key
-                String encryptedNonce_S = encrypt(nonce_S, sharedKey); // sharedKey would be a pre-established symmetric key
-                out.println(encryptedNonce_S);
-
-                // Step 3: Receive client nonce (nonce_C) encrypted with the shared key
-                String encryptedNonce_C = in.readLine();
-                String nonce_C = decrypt(encryptedNonce_C, sharedKey);
-
-                // Step 4: Derive Master Secret using both nonces (and potentially the shared key)
-                SecretKey masterSecret = deriveMasterSecret(nonce_C, nonce_S, sharedKey);
-
-                // Step 5: Store the Master Secret with the session identified by username
-                storeMasterSecret(username, masterSecret);
-
-                // Derive Data Encryption Key and MAC Key from Master Secret
-                SecretKey[] keys = deriveKeysFromMasterSecret(masterSecret);
-                SecretKey encryptionKey = keys[0];
-                SecretKey macKey = keys[1];
-                System.out.println("Data Encryption Key and MAC Key derived.");
-
-                // Indicate to the client that the key distribution protocol was successful
-                out.println("KEY DISTRIBUTION COMPLETE");
-
-            } catch (Exception e) {
-                throw new IOException("Key distribution failed", e);
-            }
-        }
-
-        private String generateNonce() {
-            // Securely generate and return a nonce
-            return Long.toString(new SecureRandom().nextLong());
-        }
-
-        private String encrypt(String data, SecretKey key) throws Exception {
-            Cipher cipher = Cipher.getInstance(ALGORITHM);
-            cipher.init(Cipher.ENCRYPT_MODE, key);
-            byte[] encryptedBytes = cipher.doFinal(data.getBytes());
-            return Base64.getEncoder().encodeToString(encryptedBytes);
-        }
-
-        private String decrypt(String data, SecretKey key) throws Exception {
-            Cipher cipher = Cipher.getInstance(ALGORITHM);
-            cipher.init(Cipher.DECRYPT_MODE, key);
-            byte[] original = cipher.doFinal(Base64.getDecoder().decode(data));
-            return new String(original);
-        }
-
-        private SecretKey deriveMasterSecret(String nonce_C, String nonce_S, SecretKey sharedKey) throws Exception {
-            // Derive Master Secret (example method, adjust as needed)
-            MessageDigest sha256 = MessageDigest.getInstance("SHA-256");
-            byte[] hash = sha256.digest((nonce_C + nonce_S).getBytes());
-            return new SecretKeySpec(Arrays.copyOf(hash, 16), "AES"); // Using first 128 bits of hash
-        }
-
-        private void storeMasterSecret(String username, SecretKey masterSecret) {
-            // Store the master secret in the map, associated with the username
-            masterSecrets.put(username, masterSecret);
-        }
-
-        private static SecretKey[] deriveKeysFromMasterSecret(SecretKey masterSecret) throws Exception {
-            MessageDigest sha256 = MessageDigest.getInstance("SHA-256");
-            byte[] hash = sha256.digest(masterSecret.getEncoded());
-
-            // Split the hash in half; use the first part for the encryption key, the second part for the MAC key
-            byte[] encryptionKeyBytes = Arrays.copyOfRange(hash, 0, hash.length / 2);
-            byte[] macKeyBytes = Arrays.copyOfRange(hash, hash.length / 2, hash.length);
-
-            // Create SecretKey objects from the byte arrays
-            SecretKey encryptionKey = new SecretKeySpec(encryptionKeyBytes, "AES");
-            SecretKey macKey = new SecretKeySpec(macKeyBytes, "AES"); // Use "HmacSHA256" for HMAC operations
-
-            return new SecretKey[]{encryptionKey, macKey};
-        }
-
-        private synchronized String registerUser(String username, String password) {
-            if (userDatabase.containsKey(username)) {
-                // User already exists
-                return "ERROR: User already exists. Please try a different username.";
+            if (user_exists) {
+                send(conn->sock, "ERROR: User already exists. Please try a different username.", 64, 0);
             } else {
-                // Here is where you would hash the password in a real system
-                userDatabase.put(username, password);
-                // Registration successful
-                return "SUCCESS: User registered successfully.";
+                strcpy(userDatabase[userCount].username, username);
+                strcpy(userDatabase[userCount].password, password);
+                userCount++;
+                send(conn->sock, "SUCCESS: User registered successfully.", 38, 0);
             }
-        }
+        } else if (strcmp(buffer, "LOGIN") == 0) {
+            char username[256], password[256];
+            recv(conn->sock, username, sizeof(username), 0);
+            recv(conn->sock, password, sizeof(password), 0);
 
-        private synchronized boolean loginUser(String username, String password) {
+            int loggedIn = 0;
+            for (int i = 0; i < userCount; i++) {
+                if (strcmp(userDatabase[i].username, username) == 0 && strcmp(userDatabase[i].password, password) == 0) {
+                    loggedIn = 1;
+                    break;
+                }
+            }
 
-            String storedPassword = userDatabase.get(username);
-            return storedPassword != null && storedPassword.equals(password);
+            if (loggedIn) {
+                send(conn->sock, "LOGGED IN", 9, 0);
+                char nonce_S[KEY_SIZE];
+                char encrypted_nonce_S[KEY_SIZE];
+                char encrypted_nonce_C[KEY_SIZE];
+                char decrypted_nonce_C[KEY_SIZE];
+
+                generate_nonce(nonce_S, KEY_SIZE);
+                encrypt((unsigned char *)nonce_S, key, (unsigned char *)encrypted_nonce_S);
+                send(conn->sock, encrypted_nonce_S, KEY_SIZE, 0);
+                recv(conn->sock, encrypted_nonce_C, KEY_SIZE, 0);
+                decrypt((unsigned char *)encrypted_nonce_C, key, (unsigned char *)decrypted_nonce_C);
+
+                printf("Key distribution protocol complete.\n");
+            } else {
+                send(conn->sock, "LOGIN FAILED", 13, 0);
+            }
+        } else if (strcmp(buffer, "QUIT") == 0) {
+            break;
         }
     }
+
+    close(conn->sock);
+    free(conn);
+    pthread_exit(0);
+}
+
+int main() {
+    int sockfd, newsockfd;
+    struct sockaddr_in server_addr, client_addr;
+    connection_t *connection;
+    pthread_t thread;
+
+    sockfd = socket(AF_INET, SOCK_STREAM, 0);
+    if (sockfd < 0) {
+        perror("Socket creation failed");
+        exit(EXIT_FAILURE);
+    }
+
+    server_addr.sin_family = AF_INET;
+    server_addr.sin_port = htons(PORT);
+    server_addr.sin_addr.s_addr = INADDR_ANY;
+
+    if (bind(sockfd, (struct sockaddr *)&server_addr, sizeof(server_addr)) < 0) {
+        perror("Bind failed");
+        exit(EXIT_FAILURE);
+    }
+
+    if (listen(sockfd, 5) < 0) {
+        perror("Listen failed");
+        exit(EXIT_FAILURE);
+    }
+
+    printf("Bank Server is listening on port %d\n", PORT);
+
+    while (1) {
+        newsockfd = accept(sockfd, (struct sockaddr *)&client_addr, (socklen_t*)&client_addr);
+        if (newsockfd <= 0) {
+            perror("Accept failed");
+            continue;
+        }
+
+        connection = (connection_t *)malloc(sizeof(connection_t));
+        connection->sock = newsockfd;
+        connection->address = client_addr;
+        connection->addr_len = sizeof(client_addr);
+
+        pthread_create(&thread, 0, client_handler, (void *)connection);
+        pthread_detach(thread);
+    }
+
+    close(sockfd);
+    return 0;
 }
